@@ -1,16 +1,40 @@
 const prisma = require('../config/database');
 const viaCepService = require('../services/viaCepService');
 
+/**
+ * Controller para manipular as operações de Contato.
+ * Gerencia a lógica de negócio entre as rotas e o banco de dados via Prisma.
+ */
 const contatoController = {
-  //Criar novo contato
+  /**
+   * Cria um novo contato no banco de dados.
+   * 
+   * @param {Object} req - Objeto de requisição do Express.
+   * @param {Object} req.body - Dados do contato (nome, email, telefone, cep).
+   * @param {Object} res - Objeto de resposta do Express.
+   */
   async create(req, res) {
     try {
       const { nome, email, telefone, cep } = req.body;
 
-      //Buscar endereço pelo CEP
+      // [REGRA DE NEGÓCIO] Verificar se o e-mail já está cadastrado.
+      // O campo email é único no esquema do Prisma (@unique).
+      const emailExistente = await prisma.contato.findUnique({
+        where: { email },
+      });
+
+      if (emailExistente) {
+        return res.status(400).json({
+          success: false,
+          message: 'Este e-mail já está cadastrado em nossa agenda.',
+        });
+      }
+
+      // [INTEGRAÇÃO EXTERNA] Buscar endereço completo pelo CEP usando ViaCEP.
+      // Caso o serviço falhe ou o CEP seja inválido, uma exceção será lançada.
       const endereco = await viaCepService.buscarEnderecoPorCep(cep);
 
-      //Criar o contato no banco de dados
+      // [PERSISTÊNCIA] Salvar contato com os dados da requisição e do CEP.
       const novoContato = await prisma.contato.create({
         data: {
           nome,
@@ -27,19 +51,24 @@ const contatoController = {
         data: novoContato,
       });
     } catch (error) {
-      // Log do erro para facilitar debug em desenvolvimento
       console.error('Erro ao criar contato:', error);
 
       res.status(500).json({
         success: false,
-        message: error.message || 'Erro ao criar contato!',
+        message: error.message || 'Ocorreu um erro interno ao criar o contato.',
       });
     }
   },
 
-  //Listar todos os contatos
+  /**
+   * Lista todos os contatos cadastrados, ordenados por nome de A-Z.
+   * 
+   * @param {Object} req - Objeto de requisição.
+   * @param {Object} res - Objeto de resposta.
+   */
   async findAll(req, res) {
     try {
+      // Busca todos os registros e aplica ordenação alfabética.
       const contatos = await prisma.contato.findMany({
         orderBy: { nome: 'asc' },
       });
@@ -49,18 +78,25 @@ const contatoController = {
         data: contatos,
       });
     } catch (error) {
+      console.error('Erro ao buscar contatos:', error);
       res.status(500).json({
         success: false,
-        message: 'Error ao buscar contatos',
+        message: 'Erro ao buscar a lista de contatos.',
       });
     }
   },
 
-  // Buscar contato por ID
+  /**
+   * Busca um único contato pelo seu ID.
+   * 
+   * @param {Object} req - Requisição contendo o ID nos parâmetros.
+   * @param {Object} res - Resposta.
+   */
   async findOne(req, res) {
     try {
       const { id } = req.params;
 
+      // Prisma.findUnique exige que o critério de busca seja único.
       const contato = await prisma.contato.findUnique({
         where: { id: parseInt(id) },
       });
@@ -68,7 +104,7 @@ const contatoController = {
       if (!contato) {
         return res.status(404).json({
           success: false,
-          message: 'Contato não encontrado',
+          message: 'Contato não encontrado.',
         });
       }
 
@@ -77,41 +113,63 @@ const contatoController = {
         data: contato,
       });
     } catch (error) {
+      console.error('Erro ao buscar contato individual:', error);
       res.status(500).json({
         success: false,
-        message: 'Erro ao buscar contato',
+        message: 'Erro ao processar a busca do contato.',
       });
     }
   },
 
-  // Atualizar contato
+  /**
+   * Atualiza os dados de um contato existente.
+   * 
+   * @param {Object} req - Requisição contendo ID e novos dados.
+   * @param {Object} res - Resposta.
+   */
   async update(req, res) {
     try {
       const { id } = req.params;
       const { nome, email, telefone, cep } = req.body;
+      const idInt = parseInt(id);
 
-      // Verificar se contato existe
+      // 1. Verificar se o contato alvo existe.
       const contatoExiste = await prisma.contato.findUnique({
-        where: { id: parseInt(id) },
+        where: { id: idInt },
       });
 
       if (!contatoExiste) {
         return res.status(404).json({
           success: false,
-          message: 'Contato não encontrado',
+          message: 'Contato não encontrado.',
         });
       }
 
-      // Se o CEP foi alterado, buscar novo endereço
+      // 2. [REGRA DE NEGÓCIO] Se o email mudou, verificar se o novo já está em uso por outro.
+      if (email && email !== contatoExiste.email) {
+        const emailDuplicado = await prisma.contato.findUnique({
+          where: { email },
+        });
+
+        if (emailDuplicado) {
+          return res.status(400).json({
+            success: false,
+            message: 'Este e-mail já está sendo usado por outro contato.',
+          });
+        }
+      }
+
+      // 3. Gerenciar mudança de endereço se o CEP for alterado.
       let dadosAtualizados = { nome, email, telefone, cep };
 
       if (cep && cep !== contatoExiste.cep) {
+        // Busca novos dados de endereço apenas se houver mudança de CEP.
         const endereco = await viaCepService.buscarEnderecoPorCep(cep);
         dadosAtualizados = { ...dadosAtualizados, ...endereco };
       }
 
       const contatoAtualizado = await prisma.contato.update({
-        where: { id: parseInt(id) },
+        where: { id: idInt },
         data: dadosAtualizados,
       });
 
@@ -121,39 +179,53 @@ const contatoController = {
         data: contatoAtualizado,
       });
     } catch (error) {
+      console.error('Erro ao atualizar contato:', error);
       res.status(400).json({
         success: false,
-        message: error.message || 'Erro ao atualizar contato',
+        message: error.message || 'Não foi possível salvar as alterações.',
       });
     }
   },
 
-  //Deletar contato
+  /**
+   * Remove permanentemente um contato do banco de dados.
+   * 
+   * @param {Object} req - Requisição contendo ID.
+   * @param {Object} res - Resposta.
+   */
   async delete(req, res) {
     try {
       const { id } = req.params;
 
+      // A deleção falha se o ID não existir no Prisma.
       await prisma.contato.delete({
         where: { id: parseInt(id) },
       });
 
       res.json({
         success: true,
-        message: 'Contato deletado com sucesso!',
+        message: 'Contato removido da agenda.',
       });
     } catch (error) {
+      console.error('Erro ao deletar contato:', error);
       res.status(500).json({
         success: false,
-        message: 'Erro ao deletar contato',
+        message: 'Ocorreu um erro ao tentar excluir o contato.',
       });
     }
   },
 
-  // Buscar contatos por termo (nome ou email)
+  /**
+   * Busca contatos que correspondam a um termo no Nome ou E-mail.
+   * 
+   * @param {Object} req - Query contendo 'termo'.
+   * @param {Object} res - Resposta com lista filtrada.
+   */
   async search(req, res) {
     try {
       const { termo } = req.query;
 
+      // Busca usando operador OR e filtro 'contains' (case-insensitive).
       const contatos = await prisma.contato.findMany({
         where: {
           OR: [
@@ -169,9 +241,10 @@ const contatoController = {
         data: contatos,
       });
     } catch (error) {
+      console.error('Erro na pesquisa de contatos:', error);
       res.status(500).json({
         success: false,
-        message: 'Erro ao buscar contatos',
+        message: 'Erro ao processar a pesquisa.',
       });
     }
   },
